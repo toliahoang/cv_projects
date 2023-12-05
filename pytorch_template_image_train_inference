@@ -9,6 +9,12 @@ from torchvision import datasets
 from torchvision.transforms import ToTensor
 from torch.utils.data import DataLoader
 from pytorch_practical.helper_functions import accuracy_fn
+import numpy as np
+from torchmetrics import ConfusionMatrix
+from mlxtend.plotting import plot_confusion_matrix
+
+# from sklearn.metrics import plot_confusion_matrix
+
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
@@ -23,7 +29,6 @@ train_data = datasets.FashionMNIST(
 
 
 img, label = train_data[0]
-print(img.shape)
 
 test_data = datasets.FashionMNIST(
     root='data',
@@ -41,91 +46,177 @@ test_dataloader = DataLoader(test_data, batch_size=32, shuffle=True)
 
 
 
+# class FashionMNISTModel(nn.Module):
+#
+#     def __init__(self):
+#         super(FashionMNISTModel, self).__init__()
+#         self.flatten = nn.Flatten()
+#         self.linear1 = nn.Linear(in_features=784, out_features=10)
+#         self.relu = nn.ReLU()
+#         self.linear2 = nn.Linear(in_features=10, out_features=CLASS)
+#
+#     def forward(self,X):
+#         return self.linear2(self.relu(self.linear1(self.flatten(X))))
+
+
+
 class FashionMNISTModel(nn.Module):
 
     def __init__(self):
-        super(FashionMNISTModel, self).__init__()
-        self.flatten = nn.Flatten()
-        self.linear1 = nn.Linear(in_features=784, out_features=10)
-        self.linear2 = nn.Linear(in_features=10, out_features=CLASS)
+        super().__init__()
+        self.block_1 = nn.Sequential(
+            nn.Conv2d(in_channels=1, out_channels=10,kernel_size=(3,3), stride=(1,1), padding="same"),
+            nn.ReLU(),
+            nn.Conv2d(in_channels=10, out_channels=10,kernel_size=(3,3), stride=(1,1), padding="same"),
+            nn.MaxPool2d(kernel_size=2,stride=2)
+        )
+        self.block_2 = nn.Sequential(
+            nn.Conv2d(in_channels=10, out_channels=10,kernel_size=(3,3), stride=(1,1), padding="same"),
+            nn.ReLU(),
+            nn.Conv2d(in_channels=10, out_channels=10, kernel_size=(3,3), stride=(1,1), padding="same"),
+            nn.MaxPool2d(kernel_size=2, stride=2)
 
-    def forward(self,X):
-        return self.linear2(self.linear1(self.flatten(X)))
+        )
+        self.block_classifer = nn.Sequential(
+            nn.Flatten(),
+            nn.Linear(in_features=10*7*7, out_features=CLASS)
+        )
+
+    def forward(self, X):
+        X1= self.block_1(X)
+        X2 = self.block_2(X1)
+        X3 = self.block_classifer(X2)
+        return X3
+
+
+
 
 model_v0 = FashionMNISTModel()
 model_v0.to(device)
 
 
 loss_fn = nn.CrossEntropyLoss()
-optimizer = torch.optim.SGD(params=model_v0.parameters(), lr=0.01)
+optimizer = torch.optim.SGD(params=model_v0.parameters(), lr=0.1)
 
 
-epoch = 5
 
-for i in tqdm(range(epoch)):
+def train_step(model_v0, loss_fn, optimizer):
 
-    train_loss = 0
+    epoch = 6
+    for i in tqdm(range(epoch)):
 
-    for batch, (X_train,y_train) in enumerate(train_dataloader):
-        X_train, y_train = X_train.to(device), y_train.to(device)
-        model_v0.train()
-        print(X_train.shape)
+        train_loss = 0
+
+        for batch, (X_train,y_train) in enumerate(train_dataloader):
+            X_train, y_train = X_train.to(device), y_train.to(device)
+            # X_train, y_train = X_train.unsqueeze(dim=0), y_train.unsqueeze(dim=0)
+
+            model_v0.train()
+            y_pred = model_v0(X_train)
+
+            loss = loss_fn(y_pred, y_train)
+            train_loss += loss
+
+            optimizer.zero_grad()
+
+            loss.backward()
+
+            optimizer.step()
+
+            if batch % 400 == 0:
+                print(f"Looked at {batch * len(X_train)}/{len(train_dataloader)} samples")
+
+        train_loss /= len(train_dataloader)
+        test_loss, test_acc = 0, 0
+        model_v0.eval()
+        with torch.inference_mode():
+            for X, y in test_dataloader:
+                X, y = X.to(device), y.to(device)
+                # 1. Forward pass
+                test_pred = model_v0(X)
+
+                # 2. Calculate loss (accumatively)
+                test_loss += loss_fn(test_pred, y)  # accumulatively add up the loss per epoch
+
+                # 3. Calculate accuracy (preds need to be same as y_true)
+                test_acc += accuracy_fn(y_true=y, y_pred=test_pred.argmax(dim=1))
+
+            # Calculations on test metrics need to happen inside torch.inference_mode()
+            # Divide total test loss by length of test dataloader (per batch)
+            test_loss /= len(test_dataloader)
+
+            # Divide total accuracy by length of test dataloader (per batch)
+            test_acc /= len(test_dataloader)
+
+        ## Print out what's happening
+        print(f"\nTrain loss: {train_loss:.5f} | Test loss: {test_loss:.5f}, Test acc: {test_acc:.2f}%\n")
 
 
-        y_pred = model_v0(X_train)
-
-        loss = loss_fn(y_pred, y_train)
-        train_loss += loss
-
-        optimizer.zero_grad()
-
-        loss.backward()
-
-        optimizer.step()
-
-        if batch % 400 == 0:
-            print(f"Looked at {batch * len(X_train)}/{len(train_dataloader)} samples")
-
-    train_loss /= len(train_dataloader)
-    test_loss, test_acc = 0, 0
-    model_v0.eval()
-    with torch.inference_mode():
-        for X, y in test_dataloader:
-            X, y = X.to(device), y.to(device)
-            # 1. Forward pass
-            test_pred = model_v0(X)
-
-            # 2. Calculate loss (accumatively)
-            test_loss += loss_fn(test_pred, y)  # accumulatively add up the loss per epoch
-
-            # 3. Calculate accuracy (preds need to be same as y_true)
-            test_acc += accuracy_fn(y_true=y, y_pred=test_pred.argmax(dim=1))
-
-        # Calculations on test metrics need to happen inside torch.inference_mode()
-        # Divide total test loss by length of test dataloader (per batch)
-        test_loss /= len(test_dataloader)
-
-        # Divide total accuracy by length of test dataloader (per batch)
-        test_acc /= len(test_dataloader)
-
-    ## Print out what's happening
-    print(f"\nTrain loss: {train_loss:.5f} | Test loss: {test_loss:.5f}, Test acc: {test_acc:.2f}%\n")
 
 
+
+
+def test_single_img(idx_img):
+    model_load = FashionMNISTModel()
+    model_load.load_state_dict(torch.load("03_pytorch_fashion.pth"))
+    model_load.to(device)
+    model_load.eval()
+    img,label = test_data[idx_img]
+    img.to(device)
+    img = img.unsqueeze(dim=0)
+    pred = model_load(img)
+    pred_softmax = torch.softmax(pred, dim=1)
+    idx = pred_softmax.argmax(dim=1)
+    print("True label", label)
+    print("pred label", idx)
+    print("Pred name",test_data.classes[idx])
+    print("True name",test_data.classes[label])
+    print("==================================================")
+
+
+
+
+train_step(model_v0, loss_fn, optimizer)
 torch.save(model_v0.state_dict(), "03_pytorch_fashion.pth")
 
-print(test_data)
-model_load = FashionMNISTModel()
-model_load.load_state_dict(torch.load("03_pytorch_fashion.pth"))
-model_load.to(device)
-model_load.eval()
-img,label = test_data[1009]
-img.to(device)
-pred = model_load(img)
-pred_softmax = torch.softmax(pred, dim=1)
-idx = pred_softmax.argmax(dim=1)
-print("True label", label)
-print("pred label", idx)
-print("Pred name",test_data.classes[idx])
-print("True name",test_data.classes[label])
+
+
+
+
+
+# random_list = np.random.randint(100,1000,20)
+# for idx,i in enumerate(random_list):
+#     print("NO---",idx)
+#     test_single_img(i)
+
+
+def plot_conf_matrix():
+
+    # 1. Make predictions with trained model
+    model_load = FashionMNISTModel()
+    model_load.load_state_dict(torch.load("03_pytorch_fashion.pth"))
+    model_load.to(device)
+    model_load.eval()
+    y_preds = []
+    with torch.inference_mode():
+      for X, y in tqdm(test_dataloader, desc="Making predictions"):
+        X, y = X.to(device), y.to(device)
+        y_logit = model_load(X)
+        y_pred = torch.softmax(y_logit, dim=1).argmax(dim=1) # note: perform softmax on the "logits" dimension, not "batch" dimension (in this case we have a batch size of 32, so can perform on dim=1)
+        y_preds.append(y_pred.cpu())
+    y_pred_tensor = torch.cat(y_preds)
+    confmat = ConfusionMatrix(num_classes=len(train_data.classes), task='multiclass')
+    confmat_tensor = confmat(preds=y_pred_tensor,
+                             target=test_data.targets)
+    # plot_confusion_matrix(model_load, test_data.data.unsqueeze(dim=0), test_data.targets.unsqueeze(dim=0))
+    fig, ax = plot_confusion_matrix(
+        conf_mat=confmat_tensor.numpy(),  # matplotlib likes working with NumPy
+        class_names=train_data.classes,  # turn the row and column labels into class names
+        figsize=(10, 7)
+    )
+
+
+# plot_conf_matrix()
+# plt.show()
+
 
